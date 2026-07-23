@@ -19,20 +19,24 @@ app.config.update(
     MAIL_USE_TLS=True,
     MAIL_USE_SSL=False,
     MAIL_SERVER="smtp.gmail.com",
+    MAIL_DEFAULT_SENDER=os.getenv("SMTP_USER"),
 )
 
 mail = Mail(app)
+
 
 def get_db():
     if 'db' not in g:
         g.db = duckdb.connect(DATABASE_PATH)
     return g.db
 
+
 @app.teardown_appcontext
 def close_db(exception):
     db = g.pop('db', None)
     if db is not None:
         db.close()
+
 
 with duckdb.connect(DATABASE_PATH) as init_db:
     init_db.execute("CREATE SEQUENCE IF NOT EXISTS feedback_id_seq START 1;")
@@ -46,9 +50,12 @@ with duckdb.connect(DATABASE_PATH) as init_db:
             submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+
 @app.route("/")
 def main():
     return "Hi, this is the main page"
+
 
 @app.route("/api/feedback", methods=["POST"])
 def submit_feedback():
@@ -98,7 +105,6 @@ def get_all_feedback():
     try:
         db = get_db()
 
-
         results = db.execute(
             """
             SELECT id, email, service, rating, message, submitted_at
@@ -123,6 +129,49 @@ def get_all_feedback():
     except Exception as e:
         print(f"Error fetching feedback: {e}")
         return jsonify({"error": "Eroare internă la preluarea datelor."}), 500
+
+
+@app.route("/api/send-link", methods=["POST"])
+def send_link():
+    data = request.get_json(silent=True) or {}
+
+    customer_email = (data.get("customerEmail") or "").strip()
+    customer_name = (data.get("customerName") or "").strip()
+    subject = (data.get("subject") or "").strip()
+    message = (data.get("message") or "").strip()
+
+    errors = {}
+    if not customer_email or "@" not in customer_email:
+        errors["customerEmail"] = "A valid email address is required."
+    if not subject:
+        errors["subject"] = "Subject is required."
+    if not message:
+        errors["message"] = "Message is required."
+
+    if errors:
+        return jsonify({"success": False, "errors": errors}), 400
+
+    if not app.config["MAIL_USERNAME"] or not app.config["MAIL_PASSWORD"]:
+        return jsonify({
+            "success": False,
+            "error": "Server is missing SMTP credentials. Set SMTP_USER and SMTP_PASS."
+        }), 500
+
+    greeting = f"Hi {customer_name},\n\n" if customer_name else ""
+
+    try:
+        msg = Message(
+            subject=subject,
+            recipients=[customer_email],
+            body=f"{greeting}{message}",
+        )
+        mail.send(msg)
+    except Exception as e:
+        print(f"Mail send error: {e}")
+        return jsonify({"success": False, "error": "Failed to send email. Check SMTP settings."}), 500
+
+    return jsonify({"success": True, "message": f"Email sent to {customer_email}."}), 200
+
 
 if __name__ == "__main__":
     app.run(debug=True)
